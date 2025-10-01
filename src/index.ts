@@ -1,17 +1,28 @@
 import express, { Request, Response } from "express";
+import { PrismaClient } from "@prisma/client";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+export const prisma = new PrismaClient();
+const PORT = process.env.PORT || 5000;
+import dotenv from "dotenv";
+import cors from "cors"; 
+import morgan from "morgan";
+import authRoutes from "./routes/auth";
+dotenv.config();
 
-// Middleware
 app.use(express.json());
+app.use(cors());
+app.use(morgan("dev"));
 
-// Routes
-app.get("/", (req: Request, res: Response) => {
-  res.send("🚀 Hello from Express + TypeScript!");
+// Create user
+app.use("/auth", authRoutes);
+
+// Get users
+app.get("/users", async (_req: Request, res: Response) => {
+  const users = await prisma.user.findMany();
+  res.json(users);
 });
 
-// Start server
 app.listen(PORT, () => {
-  console.log(`Server is running at http://localhost:${PORT}`);
+  console.log(`🚀 Server ready at http://localhost:${PORT}`);
 });
