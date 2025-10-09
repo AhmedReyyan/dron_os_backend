@@ -6,6 +6,8 @@ import cors from "cors";
 import morgan from "morgan";
 import authRouter from "./routes/auth";
 import droneRouter from "./routes/drone";
+import adminRouter from "./routes/admin";
+import userRouter from "./routes/user";
 import { getWebSocketService } from "./services/websocketService";
 
 dotenv.config();
@@ -22,6 +24,8 @@ app.use(morgan("dev"));
 // Routes
 app.use("/auth", authRouter);
 app.use("/drone", droneRouter);
+app.use("/admin", adminRouter);
+app.use("/user", userRouter);
 
 // Get users
 app.get("/users", async (_req: Request, res: Response) => {

@@ -14,4 +14,23 @@ model User {
   createdAt DateTime @default(now())
   password  String
   resetPasswordOtp Int @default(0)
+  isAdmin   Boolean  @default(false)
+  drones    Drone[]
+}
+
+model Drone {
+  id              Int      @id @default(autoincrement())
+  userId          Int
+  user            User     @relation(fields: [userId], references: [id])
+  name            String
+  uin             String   @unique
+  connectionString String
+  ipAddress       String
+  port            Int
+  isConnected     Boolean  @default(false)
+  lastSeen        DateTime?
+  latitude        Float    @default(0)
+  longitude       Float    @default(0)
+  altitude        Float    @default(0)
+  createdAt       DateTime @default(now())
 }

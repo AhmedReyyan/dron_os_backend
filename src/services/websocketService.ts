@@ -5,6 +5,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { Server } from 'http';
 import { getMAVLinkService } from './mavlinkService';
+import { getDroneManager } from './droneManager';
 import type { DronePosition, BatteryStatus, HeartbeatData, GPSData } from './mavlinkService';
 
 export interface WebSocketMessage {
@@ -237,6 +238,27 @@ class DroneWebSocketService {
       this.broadcast({
         type: 'telemetry',
         data: data,
+        timestamp: Date.now()
+      });
+    });
+
+    // Setup DroneManager listeners for multi-drone support
+    const droneManager = getDroneManager();
+    
+    droneManager.on('telemetry', (droneData: any) => {
+      // Broadcast telemetry from any connected drone
+      this.broadcast({
+        type: 'telemetry',
+        data: droneData,
+        timestamp: Date.now()
+      });
+    });
+
+    droneManager.on('message', (messageData: any) => {
+      // Broadcast admin messages to specific users/drones
+      this.broadcast({
+        type: 'message' as any,
+        data: messageData,
         timestamp: Date.now()
       });
     });
