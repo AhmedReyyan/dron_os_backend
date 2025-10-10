@@ -50,7 +50,7 @@ async function main() {
       connectionString: 'udp:localhost:14551',
       ipAddress: 'localhost',
       port: 14551,
-      isConnected: false,
+      isConnected: false, // Disconnected drone - won't show on map
       latitude: 13.1960,
       longitude: 77.6969,
       altitude: 0,

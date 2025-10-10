@@ -95,18 +95,36 @@ userRouter.post('/drone/register', async (req, res) => {
 
 /**
  * GET /user/drones/:userId
- * Get user's drones
+ * Get ALL user's drones (connected and disconnected) with full details
  */
 userRouter.get('/drones/:userId', async (req, res) => {
   try {
     const userId = parseInt(req.params.userId);
-    const droneManager = getDroneManager();
     
-    const drones = await droneManager.getUserDrones(userId);
+    const drones = await prisma.drone.findMany({
+      where: { userId },
+      orderBy: [
+        { isConnected: 'desc' }, // Connected drones first
+        { lastSeen: 'desc' },    // Then by last seen
+      ],
+    });
     
     res.json({
       success: true,
-      drones,
+      drones: drones.map(drone => ({
+        id: drone.id,
+        name: drone.name,
+        uin: drone.uin,
+        latitude: drone.latitude,
+        longitude: drone.longitude,
+        altitude: drone.altitude,
+        isConnected: drone.isConnected,
+        lastSeen: drone.lastSeen,
+        ipAddress: drone.ipAddress,
+        port: drone.port,
+        connectionString: drone.connectionString,
+        createdAt: drone.createdAt,
+      })),
     });
   } catch (error: any) {
     console.error('Error fetching user drones:', error);

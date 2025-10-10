@@ -185,6 +185,8 @@ class MAVLinkService extends EventEmitter {
     }
   }
 
+  private lastDetailedLog: number = 0;
+  
   private parseMavlinkV2Message(msgId: number, payload: Buffer): void {
     try {
       switch (msgId) {
@@ -217,19 +219,15 @@ class MAVLinkService extends EventEmitter {
           }
           break;
         
-        case 33: // GLOBAL_POSITION_INT - 28 bytes
-          if (payload.length >= 28) {
+        case 33: // GLOBAL_POSITION_INT - 27 bytes (adjusted for actual payload)
+          if (payload.length >= 27) {
             const timeBootMs = payload.readUInt32LE(0);
             const lat = payload.readInt32LE(4) / 1e7;
             const lon = payload.readInt32LE(8) / 1e7;
             const alt = payload.readInt32LE(12) / 1000;
             const relAlt = payload.readInt32LE(16) / 1000;
             
-            // Only log if position/altitude changed significantly
-            if (Math.abs(this.droneState.relAlt - relAlt) > 0.5 || 
-                Math.abs(this.droneState.lat - lat) > 0.00001) {
-              console.log(`[MAVLink] 📍 Lat: ${lat.toFixed(6)}, Lon: ${lon.toFixed(6)}, Alt: ${relAlt.toFixed(1)}m ${this.droneState.armed ? '(ARMED)' : ''}`);
-            }
+            console.log(`[MAVLink] 📍 GPS: Lat=${lat.toFixed(6)}, Lon=${lon.toFixed(6)}, Alt=${relAlt.toFixed(2)}m`);
             
             this.droneState.lat = lat;
             this.droneState.lon = lon;
@@ -237,23 +235,27 @@ class MAVLinkService extends EventEmitter {
             this.droneState.relAlt = relAlt;
             
             this.emit('position', { lat, lon, alt, relative_alt: relAlt });
+          } else {
+            console.log(`[MAVLink] ⚠️ GLOBAL_POSITION payload too short: ${payload.length} bytes`);
           }
           break;
         
-        case 74: // VFR_HUD - Very useful for airspeed, groundspeed, heading, throttle
-          if (payload.length >= 20) {
+        case 74: // VFR_HUD - 17 bytes (actual payload size)
+          if (payload.length >= 17) {
             const airspeed = payload.readFloatLE(0);
             const groundspeed = payload.readFloatLE(4);
             const heading = payload.readInt16LE(8);
             const throttle = payload.readUInt16LE(10);
             const alt = payload.readFloatLE(12);
             
+            console.log(`[MAVLink] 🚁 Speed=${groundspeed.toFixed(1)}m/s, Heading=${heading}°, Throttle=${throttle}%`);
+            
             this.droneState.airSpeed = airspeed;
             this.droneState.groundSpeed = groundspeed;
             this.droneState.heading = heading;
             this.droneState.throttle = throttle;
-            
-            console.log(`[MAVLink] 🚁 Speed: ${groundspeed.toFixed(1)}m/s, Heading: ${heading}°, Throttle: ${throttle}%, Alt: ${alt.toFixed(1)}m`);
+          } else {
+            console.log(`[MAVLink] ⚠️ VFR_HUD payload too short: ${payload.length} bytes`);
           }
           break;
         
@@ -278,6 +280,33 @@ class MAVLinkService extends EventEmitter {
             }
           }
           break;
+      }
+      
+      // Log full decoded telemetry every 2 seconds
+      const now = Date.now();
+      if (now - this.lastDetailedLog > 2000) {
+        this.lastDetailedLog = now;
+        console.log('\n═══════════════════════════════════════════════════════');
+        console.log('📊 DECODED TELEMETRY DATA:');
+        console.log('───────────────────────────────────────────────────────');
+        console.log(`📍 GPS Position:`);
+        console.log(`   Latitude:  ${this.droneState.lat.toFixed(7)}°`);
+        console.log(`   Longitude: ${this.droneState.lon.toFixed(7)}°`);
+        console.log(`   Altitude (MSL): ${this.droneState.alt.toFixed(2)}m`);
+        console.log(`   Altitude (Rel): ${this.droneState.relAlt.toFixed(2)}m`);
+        console.log(`🛰️  GPS Satellites: ${this.droneState.satellites}`);
+        console.log(`───────────────────────────────────────────────────────`);
+        console.log(`🚁 Flight Data:`);
+        console.log(`   Ground Speed: ${this.droneState.groundSpeed.toFixed(2)} m/s`);
+        console.log(`   Air Speed:    ${this.droneState.airSpeed.toFixed(2)} m/s`);
+        console.log(`   Heading:      ${this.droneState.heading}°`);
+        console.log(`   Throttle:     ${this.droneState.throttle}%`);
+        console.log(`───────────────────────────────────────────────────────`);
+        console.log(`⚡ Status:`);
+        console.log(`   Armed:   ${this.droneState.armed ? '✅ YES' : '❌ NO'}`);
+        console.log(`   Mode:    ${this.droneState.mode}`);
+        console.log(`   Battery: ${this.droneState.battery}%`);
+        console.log('═══════════════════════════════════════════════════════\n');
       }
       
       // Emit full state periodically

@@ -107,24 +107,15 @@ class DroneManager extends EventEmitter {
 
         this.connections.set(droneId, connection);
 
+        // Track last database update time to avoid too frequent writes
+        let lastDbUpdate = 0;
+
         // Listen for telemetry updates
         mavlinkService.on('telemetry', (data: any) => {
           connection.telemetry = { ...connection.telemetry, ...data };
           connection.lastUpdate = Date.now();
 
-          // Update database
-          prisma.drone.update({
-            where: { id: droneId },
-            data: {
-              isConnected: true,
-              lastSeen: new Date(),
-              latitude: data.lat || connection.telemetry.lat,
-              longitude: data.lon || connection.telemetry.lon,
-              altitude: data.relAlt || connection.telemetry.relAlt,
-            },
-          }).catch(() => {});
-
-          // Emit telemetry for WebSocket broadcasting
+          // REAL-TIME: Emit to WebSocket immediately with ALL data
           this.emit('telemetry', {
             droneId,
             userId: drone.userId,
@@ -132,6 +123,22 @@ class DroneManager extends EventEmitter {
             name: drone.name,
             ...connection.telemetry,
           });
+
+          // OPTIMIZED: Only update database every 2 seconds (reduces load)
+          const now = Date.now();
+          if (now - lastDbUpdate > 2000) {
+            lastDbUpdate = now;
+            prisma.drone.update({
+              where: { id: droneId },
+              data: {
+                isConnected: true,
+                lastSeen: new Date(),
+                latitude: connection.telemetry.lat,
+                longitude: connection.telemetry.lon,
+                altitude: connection.telemetry.relAlt,
+              },
+            }).catch(() => {});
+          }
         });
 
         await prisma.drone.update({

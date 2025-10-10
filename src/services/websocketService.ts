@@ -299,9 +299,7 @@ class DroneWebSocketService {
     const droneManager = getDroneManager();
     
     droneManager.on('telemetry', (droneData: any) => {
-      // Broadcast telemetry with server-side filtering
-      // droneData includes: droneId, userId, uin, name, telemetry data
-      console.log(`[WebSocket] 📡 Received telemetry for Drone ${droneData.name} (Owner: User ${droneData.userId})`);
+      // Broadcast telemetry with server-side filtering (reduced logging)
       this.broadcastTelemetryFiltered(droneData);
     });
 
@@ -357,14 +355,12 @@ class DroneWebSocketService {
         const shouldReceive = clientInfo.isAdmin || clientInfo.userId === targetUserId;
         
         if (shouldReceive) {
-          console.log(`[WebSocket] 📤 Sending telemetry to User ${clientInfo.userId} (Drone ${droneData.name}, Owner: ${targetUserId})`);
+          // Send data (logging reduced for performance)
           ws.send(JSON.stringify({
             type: 'telemetry',
             data: droneData,
             timestamp: Date.now()
           }));
-        } else {
-          console.log(`[WebSocket] 🚫 Blocking telemetry to User ${clientInfo.userId} (Drone ${droneData.name}, Owner: ${targetUserId})`);
         }
       }
     });
