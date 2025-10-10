@@ -14,9 +14,16 @@ export interface WebSocketMessage {
   timestamp: number;
 }
 
+interface ClientInfo {
+  userId: number | null;
+  isAdmin: boolean;
+  authenticated: boolean;
+  connectedAt: number;
+}
+
 class DroneWebSocketService {
   private wss: WebSocketServer | null = null;
-  private clients: Set<WebSocket> = new Set();
+  private clients: Map<WebSocket, ClientInfo> = new Map();
   private mavlinkService = getMAVLinkService();
   private droneData: {
     position: DronePosition | null;
@@ -49,15 +56,23 @@ class DroneWebSocketService {
   }
 
   private handleConnection(ws: WebSocket): void {
-    console.log('[WebSocket] New client connected');
-    this.clients.add(ws);
+    console.log('[WebSocket] New client connected, awaiting authentication...');
+    
+    // Initialize client with unauthenticated state
+    this.clients.set(ws, {
+      userId: null,
+      isAdmin: false,
+      authenticated: false,
+      connectedAt: Date.now()
+    });
 
     // Send current connection status
     this.sendToClient(ws, {
       type: 'status',
       data: {
         connected: this.mavlinkService.isConnected(),
-        ...this.droneData
+        ...this.droneData,
+        requiresAuth: true
       },
       timestamp: Date.now()
     });
@@ -67,7 +82,8 @@ class DroneWebSocketService {
     });
 
     ws.on('close', () => {
-      console.log('[WebSocket] Client disconnected');
+      const clientInfo = this.clients.get(ws);
+      console.log(`[WebSocket] Client disconnected (User: ${clientInfo?.userId || 'unknown'})`);
       this.clients.delete(ws);
     });
 
@@ -82,6 +98,9 @@ class DroneWebSocketService {
       const data = JSON.parse(message.toString());
 
       switch (data.type) {
+        case 'auth':
+          this.handleAuthentication(ws, data);
+          break;
         case 'connect':
           this.handleConnectRequest(ws, data.connectionString);
           break;
@@ -107,6 +126,45 @@ class DroneWebSocketService {
       this.sendToClient(ws, {
         type: 'error',
         data: { message: 'Invalid message format' },
+        timestamp: Date.now()
+      });
+    }
+  }
+
+  /**
+   * Handle client authentication
+   */
+  private handleAuthentication(ws: WebSocket, data: any): void {
+    const { userId, isAdmin } = data;
+    
+    if (!userId) {
+      this.sendToClient(ws, {
+        type: 'error' as any,
+        data: { message: 'userId required for authentication' },
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    // Update client info
+    const clientInfo = this.clients.get(ws);
+    if (clientInfo) {
+      clientInfo.userId = userId;
+      clientInfo.isAdmin = isAdmin || false;
+      clientInfo.authenticated = true;
+      this.clients.set(ws, clientInfo);
+      
+      console.log(`[WebSocket] ✅ Client authenticated: User ${userId} (Admin: ${isAdmin})`);
+      
+      // Send confirmation
+      this.sendToClient(ws, {
+        type: 'status' as any,
+        data: { 
+          authenticated: true,
+          userId,
+          isAdmin,
+          message: 'Authentication successful'
+        },
         timestamp: Date.now()
       });
     }
@@ -234,24 +292,17 @@ class DroneWebSocketService {
     });
 
     // Listen for full telemetry updates
-    this.mavlinkService.on('telemetry', (data: any) => {
-      this.broadcast({
-        type: 'telemetry',
-        data: data,
-        timestamp: Date.now()
-      });
-    });
-
+    // NOTE: Removed old mavlinkService telemetry listener
+    // Now using DroneManager which includes userId for proper filtering
+    
     // Setup DroneManager listeners for multi-drone support
     const droneManager = getDroneManager();
     
     droneManager.on('telemetry', (droneData: any) => {
-      // Broadcast telemetry from any connected drone
-      this.broadcast({
-        type: 'telemetry',
-        data: droneData,
-        timestamp: Date.now()
-      });
+      // Broadcast telemetry with server-side filtering
+      // droneData includes: droneId, userId, uin, name, telemetry data
+      console.log(`[WebSocket] 📡 Received telemetry for Drone ${droneData.name} (Owner: User ${droneData.userId})`);
+      this.broadcastTelemetryFiltered(droneData);
     });
 
     droneManager.on('message', (messageData: any) => {
@@ -279,19 +330,50 @@ class DroneWebSocketService {
     }
   }
 
+  /**
+   * Broadcast message to all authenticated clients
+   */
   private broadcast(message: WebSocketMessage): void {
     const messageStr = JSON.stringify(message);
-    this.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(messageStr);
+    this.clients.forEach((clientInfo, ws) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(messageStr);
+      }
+    });
+  }
+
+  /**
+   * Broadcast telemetry with server-side filtering
+   * Only sends to: 1) Drone owner, 2) Admins
+   */
+  private broadcastTelemetryFiltered(droneData: any): void {
+    const targetUserId = droneData.userId;
+    
+    this.clients.forEach((clientInfo, ws) => {
+      // Only send if:
+      // 1. Client is authenticated, AND
+      // 2. Client owns this drone OR is admin
+      if (clientInfo.authenticated && ws.readyState === WebSocket.OPEN) {
+        const shouldReceive = clientInfo.isAdmin || clientInfo.userId === targetUserId;
+        
+        if (shouldReceive) {
+          console.log(`[WebSocket] 📤 Sending telemetry to User ${clientInfo.userId} (Drone ${droneData.name}, Owner: ${targetUserId})`);
+          ws.send(JSON.stringify({
+            type: 'telemetry',
+            data: droneData,
+            timestamp: Date.now()
+          }));
+        } else {
+          console.log(`[WebSocket] 🚫 Blocking telemetry to User ${clientInfo.userId} (Drone ${droneData.name}, Owner: ${targetUserId})`);
+        }
       }
     });
   }
 
   public close(): void {
     if (this.wss) {
-      this.clients.forEach((client) => {
-        client.close();
+      this.clients.forEach((clientInfo, ws) => {
+        ws.close();
       });
       this.clients.clear();
       this.wss.close();

@@ -8,29 +8,66 @@ datasource db {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  password  String
-  resetPasswordOtp Int @default(0)
-  isAdmin   Boolean  @default(false)
-  drones    Drone[]
+  id               Int         @id @default(autoincrement())
+  email            String      @unique
+  name             String?
+  createdAt        DateTime    @default(now())
+  password         String
+  resetPasswordOtp Int         @default(0)
+  isAdmin          Boolean     @default(false)
+  drones           Drone[]
+  flightLogs       FlightLog[]
+  missions         Mission[]
 }
 
 model Drone {
-  id              Int      @id @default(autoincrement())
+  id              Int         @id @default(autoincrement())
   userId          Int
-  user            User     @relation(fields: [userId], references: [id])
+  user            User        @relation(fields: [userId], references: [id])
   name            String
-  uin             String   @unique
+  uin             String      @unique
   connectionString String
   ipAddress       String
   port            Int
-  isConnected     Boolean  @default(false)
+  isConnected     Boolean     @default(false)
   lastSeen        DateTime?
-  latitude        Float    @default(0)
-  longitude       Float    @default(0)
-  altitude        Float    @default(0)
-  createdAt       DateTime @default(now())
+  latitude        Float       @default(0)
+  longitude       Float       @default(0)
+  altitude        Float       @default(0)
+  createdAt       DateTime    @default(now())
+  flightLogs      FlightLog[]
+  missions        Mission[]
+}
+
+model FlightLog {
+  id              Int       @id @default(autoincrement())
+  droneId         Int
+  drone           Drone     @relation(fields: [droneId], references: [id])
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id])
+  startTime       DateTime  @default(now())
+  endTime         DateTime?
+  duration        Int?      // in seconds
+  maxAltitude     Float     @default(0)
+  maxSpeed        Float     @default(0)
+  distance        Float     @default(0)
+  batteryStart    Float?
+  batteryEnd      Float?
+  status          String    @default("in_progress") // completed, failed, in_progress
+  missionId       String?
+  createdAt       DateTime  @default(now())
+}
+
+model Mission {
+  id              Int       @id @default(autoincrement())
+  userId          Int
+  user            User      @relation(fields: [userId], references: [id])
+  name            String
+  status          String    @default("planning") // planning, active, completed, failed
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  waypoints       Json?     // Store waypoints as JSON
+  droneId         Int?
+  drone           Drone?    @relation(fields: [droneId], references: [id])
 }

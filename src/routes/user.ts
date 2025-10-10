@@ -23,6 +23,38 @@ userRouter.post('/drone/register', async (req, res) => {
     const connectionString = `udp:${ipAddress}:${port}`;
     const droneManager = getDroneManager();
 
+    // Check if drone already exists
+    const existingDrone = await prisma.drone.findUnique({ where: { uin } });
+    
+    if (existingDrone) {
+      // Drone exists - check if it's connected
+      if (existingDrone.isConnected) {
+        console.log(`⚠️ Drone ${uin} already connected`);
+        return res.json({
+          success: true,
+          droneId: existingDrone.id,
+          connected: true,
+          alreadyConnected: true,
+          message: `Drone ${name} is already connected! You can see it on the map.`,
+        });
+      } else {
+        // Exists but disconnected - reconnect
+        console.log(`🔄 Reconnecting to existing drone ${uin}`);
+        const connected = await droneManager.connectDrone(existingDrone.id);
+        
+        return res.json({
+          success: true,
+          droneId: existingDrone.id,
+          connected,
+          reconnected: true,
+          message: connected
+            ? `Drone ${name} reconnected successfully!`
+            : `Found drone ${name}, but connection failed. Check if drone is online.`,
+        });
+      }
+    }
+
+    // New drone - register and connect
     const droneId = await droneManager.registerDrone(
       userId,
       name,
@@ -40,12 +72,24 @@ userRouter.post('/drone/register', async (req, res) => {
       droneId,
       connected,
       message: connected
-        ? 'Drone registered and connected successfully'
-        : 'Drone registered but connection failed',
+        ? `Drone ${name} registered and connected successfully!`
+        : `Drone ${name} registered but connection failed. Check IP and port.`,
     });
   } catch (error: any) {
     console.error('Error registering drone:', error);
-    res.status(500).json({ error: error.message });
+    
+    // Handle unique constraint violation
+    if (error.code === 'P2002') {
+      return res.status(400).json({ 
+        success: false,
+        error: 'This drone UIN is already registered. Each drone must have a unique UIN.' 
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      error: error.message || 'Failed to register drone'
+    });
   }
 });
 
@@ -95,5 +139,162 @@ userRouter.post('/drone/:droneId/connect', async (req, res) => {
   }
 });
 
+/**
+ * GET /user/stats/:userId
+ * Get dashboard statistics for user
+ */
+userRouter.get('/stats/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+
+    // Get mission counts
+    const [activeMissions, totalMissions] = await Promise.all([
+      prisma.mission.count({ where: { userId, status: 'active' } }),
+      prisma.mission.count({ where: { userId } }),
+    ]);
+
+    // Get drone counts
+    const [totalDrones, operationalDrones] = await Promise.all([
+      prisma.drone.count({ where: { userId } }),
+      prisma.drone.count({ where: { userId, isConnected: true } }),
+    ]);
+
+    // Get flight hours (sum of durations in seconds, convert to hours)
+    const flightData = await prisma.flightLog.aggregate({
+      where: { userId, status: 'completed' },
+      _sum: { duration: true },
+      _count: { id: true },
+    });
+
+    const totalFlightHours = flightData._sum.duration 
+      ? Math.round(flightData._sum.duration / 3600) 
+      : 0;
+
+    // Calculate success rate
+    const [completedMissions, failedMissions] = await Promise.all([
+      prisma.mission.count({ where: { userId, status: 'completed' } }),
+      prisma.mission.count({ where: { userId, status: 'failed' } }),
+    ]);
+
+    const totalCompletedOrFailed = completedMissions + failedMissions;
+    const successRate = totalCompletedOrFailed > 0
+      ? ((completedMissions / totalCompletedOrFailed) * 100).toFixed(1)
+      : '100.0';
+
+    res.json({
+      success: true,
+      stats: {
+        activeMissions,
+        totalMissions,
+        totalDrones,
+        operationalDrones,
+        totalFlightHours,
+        totalFlights: flightData._count.id,
+        successRate: parseFloat(successRate),
+      },
+    });
+  } catch (error: any) {
+    console.error('Error fetching user stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /user/recent-activity/:userId
+ * Get recent activity/missions for user
+ */
+userRouter.get('/recent-activity/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+
+    const recentMissions = await prisma.mission.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      include: { drone: true },
+    });
+
+    const activities = recentMissions.map(mission => ({
+      id: mission.id,
+      type: mission.status,
+      title: mission.name,
+      status: mission.status,
+      timestamp: mission.completedAt || mission.startedAt || mission.createdAt,
+      droneName: mission.drone?.name,
+    }));
+
+    res.json({
+      success: true,
+      activities,
+    });
+  } catch (error: any) {
+    console.error('Error fetching recent activity:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /user/flight-logs/:userId
+ * Get flight logs for user
+ */
+userRouter.get('/flight-logs/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    const limit = parseInt(req.query.limit as string) || 20;
+
+    const logs = await prisma.flightLog.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: { 
+        drone: { select: { name: true, uin: true } } 
+      },
+    });
+
+    res.json({
+      success: true,
+      logs,
+    });
+  } catch (error: any) {
+    console.error('Error fetching flight logs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /user/active-drones/:userId
+ * Get currently active/connected drones for operations page
+ */
+userRouter.get('/active-drones/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+
+    const activeDrones = await prisma.drone.findMany({
+      where: { userId, isConnected: true },
+      select: {
+        id: true,
+        name: true,
+        uin: true,
+        latitude: true,
+        longitude: true,
+        altitude: true,
+        isConnected: true,
+        lastSeen: true,
+      },
+    });
+
+    res.json({
+      success: true,
+      drones: activeDrones,
+    });
+  } catch (error: any) {
+    console.error('Error fetching active drones:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default userRouter;
+
+
+
 

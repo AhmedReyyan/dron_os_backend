@@ -185,5 +185,56 @@ adminRouter.get('/users', async (req, res) => {
   }
 });
 
+/**
+ * GET /admin/all-active-drones
+ * Get ALL active drones from ALL clients with positions (admin only)
+ */
+adminRouter.get('/all-active-drones', async (req, res) => {
+  try {
+    const allDrones = await prisma.drone.findMany({
+      where: {
+        isConnected: true,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+      orderBy: {
+        lastSeen: 'desc',
+      },
+    });
+
+    res.json({
+      success: true,
+      drones: allDrones.map(drone => ({
+        id: drone.id,
+        name: drone.name,
+        uin: drone.uin,
+        latitude: drone.latitude,
+        longitude: drone.longitude,
+        altitude: drone.altitude,
+        isConnected: drone.isConnected,
+        lastSeen: drone.lastSeen,
+        ipAddress: drone.ipAddress,
+        port: drone.port,
+        userId: drone.userId,
+        userName: drone.user.name || drone.user.email,
+        userEmail: drone.user.email,
+      })),
+    });
+  } catch (error: any) {
+    console.error('Error fetching all active drones:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default adminRouter;
+
+
+
 
