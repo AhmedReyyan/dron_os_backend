@@ -1,11 +1,10 @@
 /**
- * Drone Manager - Handles multiple drone connections
- * Similar to Python Server that manages multiple client connections
+ * Drone Manager - Pure in-memory drone connection management
+ * No database - all state managed in memory via WebSocket
  */
 
 import { EventEmitter } from 'events';
 import { getMAVLinkService } from './mavlinkService';
-import { prisma } from '../index';
 
 interface DroneConnection {
   droneId: number;
@@ -13,8 +12,11 @@ interface DroneConnection {
   uin: string;
   name: string;
   connectionString: string;
+  ipAddress: string;
+  port: number;
   mavlinkService: any;
   lastUpdate: number;
+  isConnected: boolean;
   telemetry: {
     lat: number;
     lon: number;
@@ -23,6 +25,7 @@ interface DroneConnection {
     armed: boolean;
     mode: string;
     groundSpeed: number;
+    airSpeed: number;
     heading: number;
     throttle: number;
     battery: number;
@@ -32,9 +35,10 @@ interface DroneConnection {
 
 class DroneManager extends EventEmitter {
   private connections: Map<number, DroneConnection> = new Map();
+  private nextDroneId: number = 1;
 
   /**
-   * Register a new drone for a user
+   * Register a new drone (in-memory only)
    */
   async registerDrone(
     userId: number,
@@ -45,19 +49,10 @@ class DroneManager extends EventEmitter {
     port: number
   ): Promise<number> {
     try {
-      const drone = await prisma.drone.create({
-        data: {
-          userId,
-          name,
-          uin,
-          connectionString,
-          ipAddress,
-          port,
-        },
-      });
-
-      console.log(`[DroneManager] Registered drone ${name} (UIN: ${uin}) for user ${userId}`);
-      return drone.id;
+      const droneId = this.nextDroneId++;
+      
+      console.log(`[DroneManager] Registered drone ${name} (UIN: ${uin}) for user ${userId} (ID: ${droneId})`);
+      return droneId;
     } catch (error) {
       console.error('[DroneManager] Error registering drone:', error);
       throw error;
@@ -69,177 +64,193 @@ class DroneManager extends EventEmitter {
    */
   async connectDrone(droneId: number): Promise<boolean> {
     try {
-      const drone = await prisma.drone.findUnique({ where: { id: droneId } });
-      if (!drone) {
-        throw new Error('Drone not found');
+      // Get drone info from connections if it exists, or create placeholder
+      const existingConn = this.connections.get(droneId);
+      
+      if (!existingConn) {
+        console.error(`[DroneManager] Drone ${droneId} not found in connections`);
+        return false;
       }
+
+      const { connectionString, userId, uin, name } = existingConn;
 
       // Create a new MAVLink service for this drone
       const { default: MAVLinkService } = await import('./mavlinkService');
       const mavlinkService = new MAVLinkService();
 
-      const success = await mavlinkService.connect(drone.connectionString);
+      // Initialize telemetry state
+      const connection: DroneConnection = {
+        droneId,
+        userId,
+        uin,
+        name,
+        connectionString,
+        ipAddress: existingConn.ipAddress,
+        port: existingConn.port,
+        mavlinkService,
+        lastUpdate: Date.now(),
+        isConnected: false,
+        telemetry: {
+          lat: 0,
+          lon: 0,
+          alt: 0,
+          relAlt: 0,
+          armed: false,
+          mode: 'UNKNOWN',
+          groundSpeed: 0,
+          airSpeed: 0,
+          heading: 0,
+          throttle: 0,
+          battery: 0,
+          satellites: 0,
+        },
+      };
+
+      this.connections.set(droneId, connection);
+
+      // Listen to MAVLink telemetry updates
+      mavlinkService.on('telemetry', (data: any) => {
+        connection.telemetry = { ...connection.telemetry, ...data };
+        connection.lastUpdate = Date.now();
+
+        // REAL-TIME: Emit to WebSocket immediately with ALL data
+        this.emit('telemetry', {
+          droneId,
+          userId,
+          uin,
+          name,
+          ...connection.telemetry,
+        });
+      });
+
+      // Connect to the drone
+      const success = await mavlinkService.connect(connectionString);
 
       if (success) {
-        // Store connection
-        const connection: DroneConnection = {
-          droneId: drone.id,
-          userId: drone.userId,
-          uin: drone.uin,
-          name: drone.name,
-          connectionString: drone.connectionString,
-          mavlinkService,
-          lastUpdate: Date.now(),
-          telemetry: {
-            lat: 0,
-            lon: 0,
-            alt: 0,
-            relAlt: 0,
-            armed: false,
-            mode: 'UNKNOWN',
-            groundSpeed: 0,
-            heading: 0,
-            throttle: 0,
-            battery: 100,
-            satellites: 0,
-          },
-        };
-
-        this.connections.set(droneId, connection);
-
-        // Track last database update time to avoid too frequent writes
-        let lastDbUpdate = 0;
-
-        // Listen for telemetry updates
-        mavlinkService.on('telemetry', (data: any) => {
-          connection.telemetry = { ...connection.telemetry, ...data };
-          connection.lastUpdate = Date.now();
-
-          // REAL-TIME: Emit to WebSocket immediately with ALL data
-          this.emit('telemetry', {
-            droneId,
-            userId: drone.userId,
-            uin: drone.uin,
-            name: drone.name,
-            ...connection.telemetry,
-          });
-
-          // OPTIMIZED: Only update database every 2 seconds (reduces load)
-          const now = Date.now();
-          if (now - lastDbUpdate > 2000) {
-            lastDbUpdate = now;
-            prisma.drone.update({
-              where: { id: droneId },
-              data: {
-                isConnected: true,
-                lastSeen: new Date(),
-                latitude: connection.telemetry.lat,
-                longitude: connection.telemetry.lon,
-                altitude: connection.telemetry.relAlt,
-              },
-            }).catch(() => {});
-          }
-        });
-
-        await prisma.drone.update({
-          where: { id: droneId },
-          data: { isConnected: true },
-        });
-
-        console.log(`[DroneManager] ✅ Connected to drone ${drone.name} (${drone.uin})`);
-        return true;
+        connection.isConnected = true;
+        console.log(`[DroneManager] ✅ Connected to drone ${name} (${uin})`);
+      } else {
+        console.error(`[DroneManager] ❌ Failed to connect to drone ${name} (${uin})`);
       }
 
-      return false;
+      return success;
     } catch (error) {
-      console.error('[DroneManager] Error connecting drone:', error);
+      console.error('[DroneManager] Error connecting to drone:', error);
       return false;
     }
   }
 
   /**
-   * Disconnect a drone
+   * Disconnect from a drone
    */
   async disconnectDrone(droneId: number): Promise<void> {
     const connection = this.connections.get(droneId);
-    if (connection) {
-      connection.mavlinkService.disconnect();
-      this.connections.delete(droneId);
+    if (!connection) return;
 
-      await prisma.drone.update({
-        where: { id: droneId },
-        data: { isConnected: false },
-      });
+    console.log(`[DroneManager] Disconnecting drone ${connection.name} (${droneId})`);
 
-      console.log(`[DroneManager] Disconnected drone ${connection.name}`);
-    }
+    connection.mavlinkService?.disconnect();
+    this.connections.delete(droneId);
+
+    this.emit('disconnected', { droneId });
   }
 
   /**
-   * Get all connected drones
+   * Register drone with initial connection info (called before connectDrone)
    */
-  getAllConnectedDrones() {
-    return Array.from(this.connections.values()).map((conn) => ({
-      droneId: conn.droneId,
-      userId: conn.userId,
-      uin: conn.uin,
-      name: conn.name,
-      telemetry: conn.telemetry,
-      lastUpdate: conn.lastUpdate,
-    }));
-  }
-
-  /**
-   * Get drones for a specific user
-   */
-  async getUserDrones(userId: number) {
-    const drones = await prisma.drone.findMany({
-      where: { userId },
+  initializeDrone(
+    droneId: number,
+    userId: number,
+    name: string,
+    uin: string,
+    connectionString: string,
+    ipAddress: string,
+    port: number
+  ): void {
+    this.connections.set(droneId, {
+      droneId,
+      userId,
+      uin,
+      name,
+      connectionString,
+      ipAddress,
+      port,
+      mavlinkService: null,
+      lastUpdate: Date.now(),
+      isConnected: false,
+      telemetry: {
+        lat: 0,
+        lon: 0,
+        alt: 0,
+        relAlt: 0,
+        armed: false,
+        mode: 'UNKNOWN',
+        groundSpeed: 0,
+        airSpeed: 0,
+        heading: 0,
+        throttle: 0,
+        battery: 0,
+        satellites: 0,
+      },
     });
+  }
+
+  /**
+   * Get all active drones
+   */
+  getActiveDrones(): any[] {
+    const drones: any[] = [];
+    
+    this.connections.forEach((conn) => {
+      if (conn.isConnected) {
+        drones.push({
+          id: conn.droneId,
+          userId: conn.userId,
+          name: conn.name,
+          uin: conn.uin,
+          latitude: conn.telemetry.lat,
+          longitude: conn.telemetry.lon,
+          altitude: conn.telemetry.relAlt,
+          isConnected: conn.isConnected,
+          lastSeen: new Date(conn.lastUpdate).toISOString(),
+        });
+      }
+    });
+
     return drones;
   }
 
   /**
-   * Send message to specific drone (admin feature)
+   * Get ALL drones (for admin)
    */
-  async sendMessageToDrone(
-    droneId: number,
-    message: string,
-    importance: 'normal' | 'important' | 'warning' | 'critical'
-  ): Promise<boolean> {
-    const connection = this.connections.get(droneId);
-    if (!connection) {
-      return false;
-    }
-
-    // Emit message event that WebSocket will broadcast to specific client
-    this.emit('message', {
-      droneId,
-      userId: connection.userId,
-      uin: connection.uin,
-      message,
-      importance,
-      timestamp: Date.now(),
+  getAllDrones(): any[] {
+    const drones: any[] = [];
+    
+    this.connections.forEach((conn) => {
+      drones.push({
+        id: conn.droneId,
+        userId: conn.userId,
+        name: conn.name,
+        uin: conn.uin,
+        latitude: conn.telemetry.lat,
+        longitude: conn.telemetry.lon,
+        altitude: conn.telemetry.relAlt,
+        isConnected: conn.isConnected,
+        lastSeen: new Date(conn.lastUpdate).toISOString(),
+        mode: conn.telemetry.mode,
+        armed: conn.telemetry.armed,
+        battery: conn.telemetry.battery,
+      });
     });
 
-    console.log(`[DroneManager] 📨 Message sent to ${connection.name}: [${importance}] ${message}`);
-    return true;
+    return drones;
   }
 
   /**
-   * Send message to all drones
+   * Get connection info
    */
-  async broadcastMessage(
-    message: string,
-    importance: 'normal' | 'important' | 'warning' | 'critical'
-  ): Promise<number> {
-    let sentCount = 0;
-    for (const [droneId] of this.connections) {
-      const success = await this.sendMessageToDrone(droneId, message, importance);
-      if (success) sentCount++;
-    }
-    console.log(`[DroneManager] 📢 Broadcast message to ${sentCount} drones`);
-    return sentCount;
+  getConnection(droneId: number): DroneConnection | undefined {
+    return this.connections.get(droneId);
   }
 }
 
@@ -254,8 +265,3 @@ export function getDroneManager(): DroneManager {
 }
 
 export default DroneManager;
-
-
-
-
-
