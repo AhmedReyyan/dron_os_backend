@@ -80,4 +80,42 @@ adminRouter.get('/stats', async (req, res) => {
   }
 });
 
+/**
+ * POST /admin/send-message
+ * Send message to all drones or a specific drone
+ */
+adminRouter.post('/send-message', async (req, res) => {
+  try {
+    const { message, importance, targetDroneId } = req.body;
+
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Message is required',
+      });
+    }
+
+    const droneManager = getDroneManager();
+    
+    // Send message to specific drone or all drones
+    const result = droneManager.sendMessage(
+      message,
+      importance || 'normal',
+      targetDroneId ? parseInt(targetDroneId) : null
+    );
+
+    res.json({
+      success: true,
+      message: result.message,
+      sentTo: result.sentTo,
+    });
+  } catch (error: any) {
+    console.error('Error sending message:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 export default adminRouter;

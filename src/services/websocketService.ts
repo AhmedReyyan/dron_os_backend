@@ -403,11 +403,9 @@ class DroneWebSocketService {
 
     droneManager.on('message', (messageData: any) => {
       // Broadcast admin messages to specific users/drones
-      this.broadcast({
-        type: 'message' as any,
-        data: messageData,
-        timestamp: Date.now()
-      });
+      console.log(`[WebSocket] Broadcasting message to user ${messageData.targetUserId}: ${messageData.message}`);
+      
+      this.broadcastMessageFiltered(messageData);
     });
 
     this.mavlinkService.on('error', (error: any) => {
@@ -460,6 +458,36 @@ class DroneWebSocketService {
             timestamp: Date.now()
           }));
         }
+      }
+    });
+  }
+
+  /**
+   * Broadcast messages with filtering
+   * Only sends to the target user (drone owner) or all users if targetUserId is null
+   */
+  private broadcastMessageFiltered(messageData: any): void {
+    const targetUserId = messageData.targetUserId;
+    
+    this.clients.forEach((clientInfo, ws) => {
+      // Send to target user OR broadcast to all authenticated users if targetUserId is null
+      const shouldSend = clientInfo.authenticated && 
+                        ws.readyState === WebSocket.OPEN &&
+                        (targetUserId === null || clientInfo.userId === targetUserId);
+      
+      if (shouldSend) {
+        ws.send(JSON.stringify({
+          type: 'message',
+          data: {
+            message: messageData.message,
+            importance: messageData.importance,
+            timestamp: messageData.timestamp,
+            droneName: messageData.targetDroneName,
+          },
+          timestamp: Date.now()
+        }));
+        
+        console.log(`[WebSocket] ✅ Message delivered to user ${clientInfo.userId} (target: ${targetUserId || 'broadcast'})`);
       }
     });
   }

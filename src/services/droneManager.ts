@@ -306,6 +306,93 @@ class DroneManager extends EventEmitter {
     }
     return undefined;
   }
+
+  /**
+   * Send message to drone(s)
+   * @param message Message content
+   * @param importance Message importance level (normal, important, warning, critical)
+   * @param targetDroneId Optional - send to specific drone, or null for all drones
+   */
+  sendMessage(
+    message: string,
+    importance: string = 'normal',
+    targetDroneId: number | null = null
+  ): { message: string; sentTo: string } {
+    const messageData = {
+      message,
+      importance,
+      timestamp: Date.now(),
+    };
+
+    if (targetDroneId) {
+      // Send to specific drone
+      const connection = this.connections.get(targetDroneId);
+      
+      if (!connection) {
+        throw new Error(`Drone ${targetDroneId} not found`);
+      }
+
+      if (!connection.isConnected) {
+        throw new Error(`Drone ${connection.name} is not connected`);
+      }
+
+      // Emit message event with target userId
+      this.emit('message', {
+        ...messageData,
+        targetUserId: connection.userId,
+        targetDroneId: connection.droneId,
+        targetDroneName: connection.name,
+      });
+
+      console.log(`[DroneManager] 📧 Message sent to drone ${connection.name} (${targetDroneId}): ${message}`);
+      
+      return {
+        message: `Message sent to ${connection.name}`,
+        sentTo: connection.name,
+      };
+    } else {
+      // Send to all connected drones
+      const connectedDrones = Array.from(this.connections.values()).filter(
+        (conn) => conn.isConnected
+      );
+
+      console.log(`[DroneManager] 📧 Broadcasting message to all drones. Found ${connectedDrones.length} connected drones`);
+
+      if (connectedDrones.length === 0) {
+        console.log(`[DroneManager] ⚠️ No connected drones found, but message will still be sent for testing`);
+        
+        // Send a test message to all authenticated users (for testing purposes)
+        this.emit('message', {
+          ...messageData,
+          targetUserId: null, // Special case for broadcast
+          targetDroneId: null,
+          targetDroneName: 'All Drones',
+        });
+        
+        return {
+          message: `Message sent to all users (no drones connected)`,
+          sentTo: `all users`,
+        };
+      }
+
+      // Emit message for each connected drone
+      connectedDrones.forEach((conn) => {
+        this.emit('message', {
+          ...messageData,
+          targetUserId: conn.userId,
+          targetDroneId: conn.droneId,
+          targetDroneName: conn.name,
+        });
+      });
+
+      console.log(`[DroneManager] 📧 Message broadcast to ${connectedDrones.length} drone(s): ${message}`);
+
+      return {
+        message: `Message sent to all drones`,
+        sentTo: `${connectedDrones.length} drone(s)`,
+      };
+    }
+  }
 }
 
 // Singleton instance
