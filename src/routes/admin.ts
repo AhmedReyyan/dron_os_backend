@@ -81,10 +81,10 @@ adminRouter.get('/stats', async (req, res) => {
 });
 
 /**
- * POST /admin/send-message
+ * POST /admin/message/send
  * Send message to all drones or a specific drone
  */
-adminRouter.post('/send-message', async (req, res) => {
+adminRouter.post('/message/send', async (req, res) => {
   try {
     const { message, importance, targetDroneId } = req.body;
 
