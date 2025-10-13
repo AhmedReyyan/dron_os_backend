@@ -113,6 +113,9 @@ class DroneWebSocketService {
         case 'disarm':
           this.handleDisarmRequest(ws);
           break;
+        case 'set_mode':
+          this.handleSetModeRequest(ws, data.mode);
+          break;
         case 'ping':
           this.sendToClient(ws, {
             type: 'status',
@@ -209,13 +212,37 @@ class DroneWebSocketService {
   }
 
   private async handleArmRequest(ws: WebSocket): Promise<void> {
-    console.log('[WebSocket] Arm request');
-    const success = await this.mavlinkService.arm();
+    const clientInfo = this.clients.get(ws);
+    if (!clientInfo || !clientInfo.userId) {
+      this.sendToClient(ws, {
+        type: 'error',
+        data: { message: 'Not authenticated' },
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    console.log(`[WebSocket] Arm request from user ${clientInfo.userId}`);
+    
+    // Get user's drone from DroneManager
+    const droneManager = getDroneManager();
+    const drone = droneManager.getDroneByUserId(clientInfo.userId);
+    
+    if (!drone) {
+      this.sendToClient(ws, {
+        type: 'error',
+        data: { message: 'No connected drone found for your account' },
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    const success = await droneManager.armDrone(drone.droneId);
     
     this.sendToClient(ws, {
       type: 'status',
       data: { 
-        message: success ? 'Arm command sent' : 'Failed to arm',
+        message: success ? `Arm command sent to ${drone.name}` : 'Failed to arm',
         armed: success
       },
       timestamp: Date.now()
@@ -223,14 +250,85 @@ class DroneWebSocketService {
   }
 
   private async handleDisarmRequest(ws: WebSocket): Promise<void> {
-    console.log('[WebSocket] Disarm request');
-    const success = await this.mavlinkService.disarm();
+    const clientInfo = this.clients.get(ws);
+    if (!clientInfo || !clientInfo.userId) {
+      this.sendToClient(ws, {
+        type: 'error',
+        data: { message: 'Not authenticated' },
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    console.log(`[WebSocket] Disarm request from user ${clientInfo.userId}`);
+    
+    // Get user's drone from DroneManager
+    const droneManager = getDroneManager();
+    const drone = droneManager.getDroneByUserId(clientInfo.userId);
+    
+    if (!drone) {
+      this.sendToClient(ws, {
+        type: 'error',
+        data: { message: 'No connected drone found for your account' },
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    const success = await droneManager.disarmDrone(drone.droneId);
     
     this.sendToClient(ws, {
       type: 'status',
       data: { 
-        message: success ? 'Disarm command sent' : 'Failed to disarm',
+        message: success ? `Disarm command sent to ${drone.name}` : 'Failed to disarm',
         armed: !success
+      },
+      timestamp: Date.now()
+    });
+  }
+
+  private async handleSetModeRequest(ws: WebSocket, mode: string): Promise<void> {
+    const clientInfo = this.clients.get(ws);
+    if (!clientInfo || !clientInfo.userId) {
+      this.sendToClient(ws, {
+        type: 'error',
+        data: { message: 'Not authenticated' },
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    if (!mode) {
+      this.sendToClient(ws, {
+        type: 'error',
+        data: { message: 'Mode parameter required' },
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    console.log(`[WebSocket] Set mode request: ${mode} from user ${clientInfo.userId}`);
+    
+    // Get user's drone from DroneManager
+    const droneManager = getDroneManager();
+    const drone = droneManager.getDroneByUserId(clientInfo.userId);
+    
+    if (!drone) {
+      this.sendToClient(ws, {
+        type: 'error',
+        data: { message: 'No connected drone found for your account' },
+        timestamp: Date.now()
+      });
+      return;
+    }
+
+    const success = await droneManager.setDroneMode(drone.droneId, mode);
+    
+    this.sendToClient(ws, {
+      type: 'status',
+      data: { 
+        message: success ? `Mode set to ${mode} for ${drone.name}` : 'Failed to set mode',
+        mode: success ? mode : undefined
       },
       timestamp: Date.now()
     });

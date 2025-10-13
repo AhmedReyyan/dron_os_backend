@@ -60,6 +60,8 @@ class MAVLinkService extends EventEmitter {
   private connectionString: string = '';
   private systemId: number = 0;
   private componentId: number = 0;
+  private remoteAddress: string = ''; // Store the IP where telemetry comes FROM
+  private remotePort: number = 14551; // Default SITL command port
   private droneState: {
     armed: boolean;
     mode: string;
@@ -123,6 +125,15 @@ class MAVLinkService extends EventEmitter {
         });
 
         udpServer.on('message', (msg, rinfo) => {
+          // Learn the remote address AND port from incoming telemetry
+          if (!this.remoteAddress || this.remoteAddress !== rinfo.address) {
+            this.remoteAddress = rinfo.address;
+            this.remotePort = rinfo.port; // Learn the source port from SITL
+            console.log(`[MAVLink] 📡 Detected telemetry from: ${rinfo.address}:${rinfo.port}`);
+            console.log(`[MAVLink] 📤 Commands will be sent back to: ${this.remoteAddress}:${this.remotePort}`);
+            console.log(`[MAVLink] ℹ️  If using SITL with --out=udp:, commands may need TCP connection to SITL port (e.g., 5792)`);
+          }
+          
           // Parse MAVLink messages silently (no raw byte logs)
           this.handleRawMessage(msg);
         });
@@ -212,9 +223,13 @@ class MAVLinkService extends EventEmitter {
             // Log changes only
             if (wasArmed !== this.droneState.armed) {
               console.log(`[MAVLink] ${this.droneState.armed ? '✅ ARMED' : '❌ DISARMED'}`);
+              // Emit immediate update for armed state change
+              this.emit('telemetry', this.droneState);
             }
             if (oldMode !== this.droneState.mode) {
-              console.log(`[MAVLink] 🎮 MODE: ${this.droneState.mode}`);
+              console.log(`[MAVLink] 🎮 MODE CHANGED: ${oldMode} → ${this.droneState.mode}`);
+              // Emit immediate update for mode change
+              this.emit('telemetry', this.droneState);
             }
           }
           break;
@@ -490,27 +505,164 @@ class MAVLinkService extends EventEmitter {
     return this.connected;
   }
 
-  public async arm(): Promise<boolean> {
+  /**
+   * Build MAVLink v2 COMMAND_LONG packet
+   */
+  private buildCommandLongPacket(command: number, param1: number = 0, param2: number = 0, 
+                                   param3: number = 0, param4: number = 0, param5: number = 0, 
+                                   param6: number = 0, param7: number = 0): Buffer {
+    const payload = Buffer.alloc(33);
+    
+    // COMMAND_LONG payload structure (33 bytes)
+    payload.writeFloatLE(param1, 0);  // param1
+    payload.writeFloatLE(param2, 4);  // param2
+    payload.writeFloatLE(param3, 8);  // param3
+    payload.writeFloatLE(param4, 12); // param4
+    payload.writeFloatLE(param5, 16); // param5
+    payload.writeFloatLE(param6, 20); // param6
+    payload.writeFloatLE(param7, 24); // param7
+    payload.writeUInt16LE(command, 28); // command
+    payload.writeUInt8(this.systemId || 1, 30);    // target_system
+    payload.writeUInt8(this.componentId || 1, 31); // target_component
+    payload.writeUInt8(0, 32);        // confirmation
+    
+    return this.buildMavlinkV2Packet(76, payload); // MSG_ID 76 = COMMAND_LONG
+  }
+
+  /**
+   * Build MAVLink v2 SET_MODE packet
+   */
+  private buildSetModePacket(customMode: number): Buffer {
+    const payload = Buffer.alloc(6);
+    
+    // SET_MODE payload structure (6 bytes)
+    payload.writeUInt32LE(customMode, 0); // custom_mode
+    payload.writeUInt8(this.systemId || 1, 4); // target_system
+    payload.writeUInt8(1, 5); // base_mode (MAV_MODE_FLAG_CUSTOM_MODE_ENABLED)
+    
+    return this.buildMavlinkV2Packet(11, payload); // MSG_ID 11 = SET_MODE
+  }
+
+  /**
+   * Build MAVLink v2 packet with proper header and checksum
+   */
+  private buildMavlinkV2Packet(msgId: number, payload: Buffer): Buffer {
+    const header = Buffer.alloc(10);
+    const msgIdBytes = Buffer.alloc(3);
+    
+    // MAVLink v2 header
+    header.writeUInt8(0xFD, 0);           // STX (start byte)
+    header.writeUInt8(payload.length, 1); // Payload length
+    header.writeUInt8(0, 2);              // Incompatibility flags
+    header.writeUInt8(0, 3);              // Compatibility flags
+    header.writeUInt8(0, 4);              // Packet sequence
+    header.writeUInt8(255, 5);            // System ID (GCS)
+    header.writeUInt8(190, 6);            // Component ID (MAV_COMP_ID_MISSIONPLANNER)
+    
+    // Message ID (24-bit, little-endian)
+    msgIdBytes.writeUIntLE(msgId, 0, 3);
+    header.writeUInt8(msgIdBytes[0], 7);
+    header.writeUInt8(msgIdBytes[1], 8);
+    header.writeUInt8(msgIdBytes[2], 9);
+    
+    // Combine header and payload
+    const packet = Buffer.concat([header, payload]);
+    
+    // Calculate CRC (MAVLink X.25 CRC)
+    const crc = this.calculateCRC(packet, msgId);
+    const crcBuffer = Buffer.alloc(2);
+    crcBuffer.writeUInt16LE(crc, 0);
+    
+    return Buffer.concat([packet, crcBuffer]);
+  }
+
+  /**
+   * Calculate MAVLink CRC-16/MCRF4XX (X.25)
+   */
+  private calculateCRC(buffer: Buffer, msgId: number): number {
+    // CRC extra bytes for common MAVLink messages
+    const crcExtra: { [key: number]: number } = {
+      11: 89,  // SET_MODE
+      76: 152, // COMMAND_LONG
+    };
+    
+    let crc = 0xFFFF;
+    
+    // Process buffer (skip magic byte)
+    for (let i = 1; i < buffer.length; i++) {
+      let tmp = buffer[i] ^ (crc & 0xFF);
+      tmp ^= (tmp << 4) & 0xFF;
+      crc = ((crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4)) & 0xFFFF;
+    }
+    
+    // Add CRC_EXTRA byte
+    if (crcExtra[msgId] !== undefined) {
+      let tmp = crcExtra[msgId] ^ (crc & 0xFF);
+      tmp ^= (tmp << 4) & 0xFF;
+      crc = ((crc >> 8) ^ (tmp << 8) ^ (tmp << 3) ^ (tmp >> 4)) & 0xFFFF;
+    }
+    
+    return crc;
+  }
+
+  /**
+   * Send MAVLink packet via UDP
+   * IMPORTANT: This sends commands back to the SAME address where telemetry came from
+   */
+  private sendPacket(packet: Buffer): boolean {
     if (!this.connected || !this.connection) {
       return false;
     }
 
     try {
-      await this.connection.send({
-        type: 'COMMAND_LONG',
-        target_system: this.systemId,
-        target_component: this.componentId,
-        command: 400,
-        confirmation: 0,
-        param1: 1,
-        param2: 0,
-        param3: 0,
-        param4: 0,
-        param5: 0,
-        param6: 0,
-        param7: 0
+      // Use the address we learned from incoming telemetry
+      if (!this.remoteAddress) {
+        console.error('[MAVLink] ❌ Cannot send - no remote address learned yet. Wait for telemetry...');
+        return false;
+      }
+      
+      // For SITL Instance 3, send commands to port 5792 (available MAVLink port)
+      // Port 5790 is used by console, so we use 5792
+      const targetHost = this.remoteAddress;
+      const targetPort = 5792; // SITL Instance 3 MAVLink command port
+      
+      console.log(`[MAVLink] 📤 Sending command to ${targetHost}:${targetPort} (SITL Instance 3)`);
+      
+      // Send packet via UDP
+      this.connection.send(packet, 0, packet.length, targetPort, targetHost, (err: any) => {
+        if (err) {
+          console.error(`[MAVLink] ❌ Error sending packet to ${targetHost}:${targetPort}:`, err);
+        } else {
+          console.log(`[MAVLink] ✅ Packet sent successfully to ${targetHost}:${targetPort}`);
+        }
       });
+      
       return true;
+    } catch (error) {
+      console.error('[MAVLink] Error sending packet:', error);
+      return false;
+    }
+  }
+
+  public async arm(): Promise<boolean> {
+    if (!this.connected || !this.connection) {
+      console.error('[MAVLink] Cannot arm - not connected');
+      return false;
+    }
+
+    try {
+      console.log('[MAVLink] Sending ARM command...');
+      
+      // MAV_CMD_COMPONENT_ARM_DISARM (400)
+      // param1: 1 = arm, 0 = disarm
+      const packet = this.buildCommandLongPacket(400, 1);
+      const success = this.sendPacket(packet);
+      
+      if (success) {
+        console.log('[MAVLink] ✅ ARM command sent');
+      }
+      
+      return success;
     } catch (error) {
       console.error('[MAVLink] Error arming:', error);
       return false;
@@ -519,27 +671,74 @@ class MAVLinkService extends EventEmitter {
 
   public async disarm(): Promise<boolean> {
     if (!this.connected || !this.connection) {
+      console.error('[MAVLink] Cannot disarm - not connected');
       return false;
     }
 
     try {
-      await this.connection.send({
-        type: 'COMMAND_LONG',
-        target_system: this.systemId,
-        target_component: this.componentId,
-        command: 400,
-        confirmation: 0,
-        param1: 0,
-        param2: 0,
-        param3: 0,
-        param4: 0,
-        param5: 0,
-        param6: 0,
-        param7: 0
-      });
-      return true;
+      console.log('[MAVLink] Sending DISARM command...');
+      
+      // MAV_CMD_COMPONENT_ARM_DISARM (400)
+      // param1: 0 = disarm, 1 = arm
+      const packet = this.buildCommandLongPacket(400, 0);
+      const success = this.sendPacket(packet);
+      
+      if (success) {
+        console.log('[MAVLink] ✅ DISARM command sent');
+      }
+      
+      return success;
     } catch (error) {
       console.error('[MAVLink] Error disarming:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Set flight mode
+   * @param mode Flight mode name (e.g., 'STABILIZE', 'GUIDED', 'LOITER')
+   */
+  public async setMode(mode: string): Promise<boolean> {
+    if (!this.connected || !this.connection) {
+      console.error('[MAVLink] Cannot set mode - not connected');
+      return false;
+    }
+
+    try {
+      // ArduCopter flight mode mapping
+      const modes: { [key: string]: number } = {
+        'STABILIZE': 0,
+        'ACRO': 1,
+        'ALT_HOLD': 2,
+        'AUTO': 3,
+        'GUIDED': 4,
+        'LOITER': 5,
+        'RTL': 6,
+        'CIRCLE': 7,
+        'LAND': 9,
+        'POSHOLD': 16,
+        'BRAKE': 17
+      };
+
+      const customMode = modes[mode.toUpperCase()];
+      
+      if (customMode === undefined) {
+        console.error(`[MAVLink] Unknown flight mode: ${mode}`);
+        return false;
+      }
+
+      console.log(`[MAVLink] Setting mode to ${mode} (${customMode})...`);
+      
+      const packet = this.buildSetModePacket(customMode);
+      const success = this.sendPacket(packet);
+      
+      if (success) {
+        console.log(`[MAVLink] ✅ SET_MODE command sent: ${mode}`);
+      }
+      
+      return success;
+    } catch (error) {
+      console.error('[MAVLink] Error setting mode:', error);
       return false;
     }
   }

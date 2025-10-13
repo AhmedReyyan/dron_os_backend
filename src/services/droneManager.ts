@@ -252,6 +252,60 @@ class DroneManager extends EventEmitter {
   getConnection(droneId: number): DroneConnection | undefined {
     return this.connections.get(droneId);
   }
+
+  /**
+   * Send ARM command to specific drone
+   */
+  async armDrone(droneId: number): Promise<boolean> {
+    const connection = this.connections.get(droneId);
+    if (!connection || !connection.mavlinkService) {
+      console.error(`[DroneManager] Cannot arm - drone ${droneId} not found or not connected`);
+      return false;
+    }
+
+    console.log(`[DroneManager] 🔧 Sending ARM command to drone ${connection.name} (${droneId})`);
+    return await connection.mavlinkService.arm();
+  }
+
+  /**
+   * Send DISARM command to specific drone
+   */
+  async disarmDrone(droneId: number): Promise<boolean> {
+    const connection = this.connections.get(droneId);
+    if (!connection || !connection.mavlinkService) {
+      console.error(`[DroneManager] Cannot disarm - drone ${droneId} not found or not connected`);
+      return false;
+    }
+
+    console.log(`[DroneManager] 🔧 Sending DISARM command to drone ${connection.name} (${droneId})`);
+    return await connection.mavlinkService.disarm();
+  }
+
+  /**
+   * Set flight mode for specific drone
+   */
+  async setDroneMode(droneId: number, mode: string): Promise<boolean> {
+    const connection = this.connections.get(droneId);
+    if (!connection || !connection.mavlinkService) {
+      console.error(`[DroneManager] Cannot set mode - drone ${droneId} not found or not connected`);
+      return false;
+    }
+
+    console.log(`[DroneManager] 🔧 Setting mode to ${mode} for drone ${connection.name} (${droneId})`);
+    return await connection.mavlinkService.setMode(mode);
+  }
+
+  /**
+   * Get drone by userId (for sending commands to user's own drone)
+   */
+  getDroneByUserId(userId: number): DroneConnection | undefined {
+    for (const [droneId, conn] of this.connections.entries()) {
+      if (conn.userId === userId && conn.isConnected) {
+        return conn;
+      }
+    }
+    return undefined;
+  }
 }
 
 // Singleton instance

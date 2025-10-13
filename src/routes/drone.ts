@@ -155,6 +155,44 @@ droneRouter.post('/disarm', async (req, res) => {
   }
 });
 
+/**
+ * POST /drone/set-mode
+ * Set flight mode
+ */
+droneRouter.post('/set-mode', async (req, res) => {
+  try {
+    const { mode } = req.body;
+
+    if (!mode) {
+      return res.status(400).json({ error: 'Flight mode is required' });
+    }
+
+    const mavlinkService = getMAVLinkService();
+
+    if (!mavlinkService.isConnected()) {
+      return res.status(400).json({ error: 'Not connected to drone' });
+    }
+
+    const success = await mavlinkService.setMode(mode);
+
+    if (success) {
+      return res.json({
+        success: true,
+        message: `Mode set to ${mode}`
+      });
+    } else {
+      return res.status(500).json({
+        error: 'Failed to set mode'
+      });
+    }
+  } catch (error: any) {
+    console.error('Set mode error:', error);
+    return res.status(500).json({
+      error: error.message || 'Failed to set mode'
+    });
+  }
+});
+
 export default droneRouter;
 
 
