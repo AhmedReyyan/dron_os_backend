@@ -227,7 +227,7 @@ class MAVLinkService extends EventEmitter {
               this.emit('telemetry', this.droneState);
             }
             if (oldMode !== this.droneState.mode) {
-              console.log(`[MAVLink] 🎮 MODE CHANGED: ${oldMode} → ${this.droneState.mode}`);
+              console.log(`[MAVLink] 🎮 MODE CHANGED: ${oldMode} → ${this.droneState.mode}`); 
               // Emit immediate update for mode change
               this.emit('telemetry', this.droneState);
             }
