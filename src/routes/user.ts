@@ -120,6 +120,47 @@ userRouter.get('/flight-logs/:userId', async (req, res) => {
 });
 
 /**
+ * POST /user/drone/disconnect
+ * Disconnect user's drone
+ */
+userRouter.post('/drone/disconnect', async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    const droneManager = getDroneManager();
+    
+    // Find user's connected drone
+    const drone = droneManager.getDroneByUserId(userId);
+    
+    if (!drone) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'No connected drone found for this user' 
+      });
+    }
+
+    // Disconnect the drone
+    await droneManager.disconnectDrone(drone.droneId);
+
+    res.json({
+      success: true,
+      message: `Drone ${drone.name} disconnected successfully`,
+      droneId: drone.droneId
+    });
+  } catch (error: any) {
+    console.error('Error disconnecting drone:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message || 'Failed to disconnect drone'
+    });
+  }
+});
+
+/**
  * GET /user/active-drones/:userId
  * Get currently active/connected drones (in-memory via DroneManager)
  */

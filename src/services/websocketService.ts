@@ -408,6 +408,20 @@ class DroneWebSocketService {
       this.broadcastMessageFiltered(messageData);
     });
 
+    droneManager.on('disconnected', (disconnectData: any) => {
+      // Broadcast drone disconnection to all clients
+      console.log(`[WebSocket] Drone ${disconnectData.droneId} disconnected, broadcasting to all clients`);
+      
+      this.broadcast({
+        type: 'disconnected',
+        data: { 
+          message: 'Drone disconnected',
+          droneId: disconnectData.droneId 
+        },
+        timestamp: Date.now()
+      });
+    });
+
     this.mavlinkService.on('error', (error: any) => {
       console.error('[WebSocket] MAVLink error:', error);
       this.broadcast({
