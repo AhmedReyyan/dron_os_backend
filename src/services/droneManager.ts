@@ -5,6 +5,7 @@
 
 import { EventEmitter } from 'events';
 import { getMAVLinkService } from './mavlinkService';
+import { getSessionService } from './sessionService';
 
 interface DroneConnection {
   droneId: number;
@@ -17,6 +18,7 @@ interface DroneConnection {
   mavlinkService: any;
   lastUpdate: number;
   isConnected: boolean;
+  sessionId?: string;
   telemetry: {
     lat: number;
     lon: number;
@@ -78,6 +80,9 @@ class DroneManager extends EventEmitter {
       const { default: MAVLinkService } = await import('./mavlinkService');
       const mavlinkService = new MAVLinkService();
 
+      // Generate session ID
+      const sessionId = `session_${droneId}_${Date.now()}`;
+
       // Initialize telemetry state
       const connection: DroneConnection = {
         droneId,
@@ -90,6 +95,7 @@ class DroneManager extends EventEmitter {
         mavlinkService,
         lastUpdate: Date.now(),
         isConnected: false,
+        sessionId,
         telemetry: {
           lat: 0,
           lon: 0,
@@ -109,9 +115,21 @@ class DroneManager extends EventEmitter {
       this.connections.set(droneId, connection);
 
       // Listen to MAVLink telemetry updates
-      mavlinkService.on('telemetry', (data: any) => {
+      mavlinkService.on('telemetry', async (data: any) => {
         connection.telemetry = { ...connection.telemetry, ...data };
         connection.lastUpdate = Date.now();
+
+        // Update session with important events only (not every telemetry point)
+        const sessionService = getSessionService();
+        await sessionService.updateSession(sessionId, {
+          latitude: data.lat,
+          longitude: data.lon,
+          altitude: data.alt,
+          battery: data.battery,
+          speed: data.groundSpeed,
+          mode: data.mode,
+          armed: data.armed
+        });
 
         // REAL-TIME: Emit to WebSocket immediately with ALL data
         this.emit('telemetry', {
@@ -128,7 +146,20 @@ class DroneManager extends EventEmitter {
 
       if (success) {
         connection.isConnected = true;
-        console.log(`[DroneManager] ✅ Connected to drone ${name} (${uin})`);
+        
+        // Start a new session
+        const sessionService = getSessionService();
+        await sessionService.startSession({
+          sessionId,
+          userId,
+          droneId,
+          startTime: new Date(),
+          startBattery: connection.telemetry.battery,
+          startLatitude: connection.telemetry.lat,
+          startLongitude: connection.telemetry.lon
+        });
+
+        console.log(`[DroneManager] ✅ Connected to drone ${name} (${uin}) - Session: ${sessionId}`);
       } else {
         console.error(`[DroneManager] ❌ Failed to connect to drone ${name} (${uin})`);
       }
@@ -148,6 +179,21 @@ class DroneManager extends EventEmitter {
     if (!connection) return;
 
     console.log(`[DroneManager] Disconnecting drone ${connection.name} (${droneId})`);
+
+    // End the session if it exists
+    if (connection.sessionId) {
+      const sessionService = getSessionService();
+      await sessionService.endSession(connection.sessionId, {
+        endTime: new Date(),
+        endBattery: connection.telemetry.battery,
+        endLatitude: connection.telemetry.lat,
+        endLongitude: connection.telemetry.lon,
+        totalDistance: 0, // Would be calculated from events
+        maxAltitude: connection.telemetry.alt,
+        maxSpeed: connection.telemetry.groundSpeed,
+        avgSpeed: connection.telemetry.groundSpeed
+      });
+    }
 
     connection.mavlinkService?.disconnect();
     this.connections.delete(droneId);

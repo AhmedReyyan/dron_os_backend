@@ -8,7 +8,9 @@ import authRouter from "./routes/auth";
 import droneRouter from "./routes/drone";
 import adminRouter from "./routes/admin";
 import userRouter from "./routes/user";
+import { analyticsRouter } from "./routes/analytics";
 import { getWebSocketService } from "./services/websocketService";
+import { getTelemetryService } from "./services/telemetryService";
 
 dotenv.config();
 
@@ -26,6 +28,7 @@ app.use("/auth", authRouter);
 app.use("/drone", droneRouter);
 app.use("/admin", adminRouter);
 app.use("/user", userRouter);
+app.use("/analytics", analyticsRouter);
 
 // Get users
 app.get("/users", async (_req: Request, res: Response) => {
@@ -62,4 +65,15 @@ server.listen(PORT, async () => {
       console.log('⚠️  [Startup] SITL connection failed - you can connect manually via /drone/connect');
     }
   }, 2000); // Wait 2 seconds for everything to initialize
+
+  // Setup telemetry cleanup job (run every hour)
+  setInterval(async () => {
+    try {
+      const telemetryService = getTelemetryService();
+      await telemetryService.cleanupOldTelemetry();
+      console.log('🧹 [Cleanup] Old telemetry data cleaned up');
+    } catch (error) {
+      console.error('❌ [Cleanup] Error cleaning up telemetry data:', error);
+    }
+  }, 60 * 60 * 1000); // Every hour
 });

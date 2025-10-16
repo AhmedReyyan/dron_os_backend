@@ -1,15 +1,17 @@
 /**
- * User Routes - Pure in-memory drone management (no database)
+ * User Routes - Database-backed drone management
  */
 
 import { Router } from 'express';
 import { getDroneManager } from '../services/droneManager';
+import { getTelemetryService } from '../services/telemetryService';
+import { prisma } from '../index';
 
 const userRouter = Router();
 
 /**
  * POST /user/drone/register
- * Register user's drone (in-memory only)
+ * Register user's drone in database
  */
 userRouter.post('/drone/register', async (req, res) => {
   try {
@@ -19,22 +21,48 @@ userRouter.post('/drone/register', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Check if drone already exists
+    const existingDrone = await prisma.drone.findUnique({
+      where: { uin }
+    });
+
+    if (existingDrone) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Drone with this UIN already exists' 
+      });
+    }
+
+    // Create drone in database
+    const drone = await prisma.drone.create({
+      data: {
+        name,
+        uin,
+        status: 'offline',
+        userId,
+        lastSeen: new Date()
+      }
+    });
+
+    // Create activity log
+    await prisma.activity.create({
+      data: {
+        type: 'drone_registered',
+        title: `Drone ${name} registered`,
+        description: `Drone ${name} (UIN: ${uin}) was registered successfully`,
+        status: 'success',
+        userId,
+        droneId: drone.id
+      }
+    });
+
+    // Register with DroneManager for real-time operations
     const connectionString = `udp:${ipAddress}:${port}`;
     const droneManager = getDroneManager();
-
-    // Register drone in-memory
-    const droneId = await droneManager.registerDrone(
-      userId,
-      name,
-      uin,
-      connectionString,
-      ipAddress,
-      port
-    );
-
+    
     // Initialize drone connection info
     droneManager.initializeDrone(
-      droneId,
+      drone.id,
       userId,
       name,
       uin,
@@ -44,11 +72,34 @@ userRouter.post('/drone/register', async (req, res) => {
     );
 
     // Auto-connect to the drone
-    const connected = await droneManager.connectDrone(droneId);
+    const connected = await droneManager.connectDrone(drone.id);
+
+    if (connected) {
+      // Update drone status in database
+      await prisma.drone.update({
+        where: { id: drone.id },
+        data: { 
+          status: 'connected',
+          lastSeen: new Date()
+        }
+      });
+
+      // Create connection activity
+      await prisma.activity.create({
+        data: {
+          type: 'drone_connected',
+          title: `Drone ${name} connected`,
+          description: `Drone ${name} successfully connected to SITL`,
+          status: 'success',
+          userId,
+          droneId: drone.id
+        }
+      });
+    }
 
     res.json({
       success: true,
-      droneId,
+      droneId: drone.id,
       connected,
       message: connected
         ? `Drone ${name} registered and connected successfully!`
@@ -65,20 +116,46 @@ userRouter.post('/drone/register', async (req, res) => {
 
 /**
  * GET /user/stats/:userId
- * Get dashboard statistics for user (mock data)
+ * Get dashboard statistics for user from database
  */
 userRouter.get('/stats/:userId', async (req, res) => {
   try {
+    const userId = parseInt(req.params.userId);
+
+    // Get user's drones
+    const drones = await prisma.drone.findMany({
+      where: { userId }
+    });
+
+    // Get user's missions
+    const missions = await prisma.mission.findMany({
+      where: { userId }
+    });
+
+    // Calculate statistics
+    const totalDrones = drones.length;
+    const operationalDrones = drones.filter((d: any) => d.status === 'connected' || d.status === 'flying').length;
+    const totalMissions = missions.length;
+    const activeMissions = missions.filter((m: any) => m.status === 'active').length;
+    const completedMissions = missions.filter((m: any) => m.status === 'completed').length;
+    const successfulMissions = missions.filter((m: any) => m.success).length;
+    
+    // Calculate total flight hours
+    const totalFlightHours = missions.reduce((sum: number, mission: any) => sum + mission.flightHours, 0);
+    
+    // Calculate success rate
+    const successRate = completedMissions > 0 ? (successfulMissions / completedMissions) * 100 : 100;
+
     res.json({
       success: true,
       stats: {
-        activeMissions: 0,
-        totalMissions: 0,
-        totalDrones: 0,
-        operationalDrones: 0,
-        totalFlightHours: 0,
-        totalFlights: 0,
-        successRate: 100.0,
+        activeMissions,
+        totalMissions,
+        totalDrones,
+        operationalDrones,
+        totalFlightHours: Math.round(totalFlightHours * 100) / 100, // Round to 2 decimal places
+        totalFlights: completedMissions,
+        successRate: Math.round(successRate * 100) / 100, // Round to 2 decimal places
       },
     });
   } catch (error: any) {
@@ -89,13 +166,41 @@ userRouter.get('/stats/:userId', async (req, res) => {
 
 /**
  * GET /user/recent-activity/:userId
- * Get recent activity (mock data)
+ * Get recent activity from database
  */
 userRouter.get('/recent-activity/:userId', async (req, res) => {
   try {
+    const userId = parseInt(req.params.userId);
+
+    // Get recent activities for the user
+    const activities = await prisma.activity.findMany({
+      where: { userId },
+      include: {
+        drone: {
+          select: { name: true }
+        },
+        mission: {
+          select: { name: true }
+        }
+      },
+      orderBy: { timestamp: 'desc' },
+      take: 20 // Limit to last 20 activities
+    });
+
+    // Format activities for frontend
+    const formattedActivities = activities.map((activity: any) => ({
+      id: activity.id,
+      type: activity.type,
+      title: activity.title,
+      status: activity.status,
+      timestamp: activity.timestamp.toISOString(),
+      droneName: activity.drone?.name,
+      missionName: activity.mission?.name
+    }));
+
     res.json({
       success: true,
-      activities: [],
+      activities: formattedActivities,
     });
   } catch (error: any) {
     console.error('Error fetching recent activity:', error);
@@ -105,13 +210,42 @@ userRouter.get('/recent-activity/:userId', async (req, res) => {
 
 /**
  * GET /user/flight-logs/:userId
- * Get flight logs (mock data)
+ * Get flight logs from database
  */
 userRouter.get('/flight-logs/:userId', async (req, res) => {
   try {
+    const userId = parseInt(req.params.userId);
+
+    // Get completed missions as flight logs
+    const flightLogs = await prisma.mission.findMany({
+      where: { 
+        userId,
+        status: 'completed'
+      },
+      include: {
+        drone: {
+          select: { name: true, uin: true }
+        }
+      },
+      orderBy: { endTime: 'desc' }
+    });
+
+    // Format flight logs for frontend
+    const formattedLogs = flightLogs.map((mission: any) => ({
+      id: mission.id,
+      missionName: mission.name,
+      droneName: mission.drone?.name,
+      droneUin: mission.drone?.uin,
+      startTime: mission.startTime?.toISOString(),
+      endTime: mission.endTime?.toISOString(),
+      flightHours: mission.flightHours,
+      success: mission.success,
+      description: mission.description
+    }));
+
     res.json({
       success: true,
-      logs: [],
+      logs: formattedLogs,
     });
   } catch (error: any) {
     console.error('Error fetching flight logs:', error);
@@ -146,6 +280,27 @@ userRouter.post('/drone/disconnect', async (req, res) => {
     // Disconnect the drone
     await droneManager.disconnectDrone(drone.droneId);
 
+    // Update drone status in database
+    await prisma.drone.update({
+      where: { id: drone.droneId },
+      data: { 
+        status: 'offline',
+        lastSeen: new Date()
+      }
+    });
+
+    // Create disconnect activity
+    await prisma.activity.create({
+      data: {
+        type: 'drone_disconnected',
+        title: `Drone ${drone.name} disconnected`,
+        description: `Drone ${drone.name} was disconnected from SITL`,
+        status: 'info',
+        userId,
+        droneId: drone.droneId
+      }
+    });
+
     res.json({
       success: true,
       message: `Drone ${drone.name} disconnected successfully`,
@@ -162,19 +317,66 @@ userRouter.post('/drone/disconnect', async (req, res) => {
 
 /**
  * GET /user/active-drones/:userId
- * Get currently active/connected drones (in-memory via DroneManager)
+ * Get currently active/connected drones from database
  */
 userRouter.get('/active-drones/:userId', async (req, res) => {
   try {
-    const droneManager = getDroneManager();
-    const activeDrones = droneManager.getActiveDrones();
+    const userId = parseInt(req.params.userId);
+
+    // Get user's drones with their current status
+    const drones = await prisma.drone.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        name: true,
+        uin: true,
+        status: true,
+        batteryLevel: true,
+        lastSeen: true,
+        createdAt: true
+      }
+    });
+
+    // Format drones for frontend
+    const formattedDrones = drones.map((drone: any) => ({
+      id: drone.id,
+      name: drone.name,
+      uin: drone.uin,
+      status: drone.status,
+      batteryLevel: drone.batteryLevel,
+      lastSeen: drone.lastSeen?.toISOString(),
+      createdAt: drone.createdAt.toISOString(),
+      isConnected: drone.status === 'connected' || drone.status === 'flying'
+    }));
 
     res.json({
       success: true,
-      drones: activeDrones,
+      drones: formattedDrones,
     });
   } catch (error: any) {
     console.error('Error fetching active drones:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /user/telemetry/:userId
+ * Get telemetry data for user's drones
+ */
+userRouter.get('/telemetry/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    const limit = parseInt(req.query.limit as string) || 100;
+
+    const telemetryService = getTelemetryService();
+    const telemetryData = await telemetryService.getUserTelemetryData(userId, limit);
+
+    res.json({
+      success: true,
+      telemetry: telemetryData,
+    });
+  } catch (error: any) {
+    console.error('Error fetching telemetry data:', error);
     res.status(500).json({ error: error.message });
   }
 });
