@@ -51,6 +51,19 @@ server.listen(PORT, async () => {
   console.log(`🚀 Server ready at http://localhost:${PORT}`);
   console.log(`📡 WebSocket available at ws://localhost:${PORT}/ws/drone`);
   
+  // Crash recovery: reset any stale 'connected'/'flying' drones to 'offline'
+  try {
+    const updated = await prisma.drone.updateMany({
+      where: { status: { in: ['connected', 'flying'] } },
+      data: { status: 'offline', lastSeen: new Date() }
+    });
+    if ((updated as any).count) {
+      console.log(`🧯 [Recovery] Reset ${ (updated as any).count } drone(s) to offline at startup`);
+    }
+  } catch (e) {
+    console.error('⚠️  [Recovery] Failed to reset drone statuses on startup:', e);
+  }
+
   // Auto-connect to SITL on startup
   const { getMAVLinkService } = await import('./services/mavlinkService.js');
   const mavlinkService = getMAVLinkService();

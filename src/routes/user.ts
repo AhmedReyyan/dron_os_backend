@@ -254,6 +254,106 @@ userRouter.get('/flight-logs/:userId', async (req, res) => {
 });
 
 /**
+ * POST /user/drone/connect-existing
+ * Connect to existing drone
+ */
+userRouter.post('/drone/connect-existing', async (req, res) => {
+  try {
+    const { userId, droneId, ipAddress, port } = req.body;
+    
+    if (!userId || !droneId) {
+      return res.status(400).json({
+        success: false,
+        error: 'User ID and Drone ID are required'
+      });
+    }
+
+    // Find the drone and verify it belongs to the user
+    const drone = await prisma.drone.findFirst({
+      where: { 
+        id: parseInt(droneId),
+        userId: parseInt(userId)
+      }
+    });
+
+    if (!drone) {
+      return res.status(404).json({
+        success: false,
+        error: 'Drone not found or does not belong to this user'
+      });
+    }
+
+    // Source of truth: in-memory DroneManager. Ignore stale DB status.
+    const droneManager = getDroneManager();
+    const existingConn = droneManager.getConnection(drone.id);
+    if (existingConn && existingConn.isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: 'Drone is already connected'
+      });
+    }
+
+    // Initialize drone in DroneManager
+    const connectionString = `udp:${ipAddress || 'localhost'}:${port || 14550}`;
+    
+    droneManager.initializeDrone(
+      drone.id,
+      parseInt(userId),
+      drone.name,
+      drone.uin,
+      connectionString,
+      ipAddress || 'localhost',
+      parseInt(port) || 14550
+    );
+
+    // Connect to the drone
+    const connected = await droneManager.connectDrone(drone.id);
+
+    if (connected) {
+      // Update drone status in database
+      await prisma.drone.update({
+        where: { id: drone.id },
+        data: { 
+          status: 'connected',
+          lastSeen: new Date()
+        }
+      });
+
+      // Log the connection activity
+      await prisma.activity.create({
+        data: {
+          userId: parseInt(userId),
+          droneId: drone.id,
+          type: 'drone_connected',
+          title: `Drone ${drone.name} connected`,
+          description: `Drone ${drone.name} (UIN: ${drone.uin}) connected to SITL at ${ipAddress}:${port}.`,
+          status: 'success'
+        }
+      });
+
+      res.json({
+        success: true,
+        message: `Drone ${drone.name} connected successfully`,
+        droneId: drone.id,
+        connected: true
+      });
+    } else {
+      res.json({
+        success: false,
+        error: 'Failed to establish connection to drone',
+        connected: false
+      });
+    }
+  } catch (error: any) {
+    console.error('Error connecting to existing drone:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to connect to existing drone'
+    });
+  }
+});
+
+/**
  * POST /user/drone/disconnect
  * Disconnect user's drone
  */
@@ -323,7 +423,7 @@ userRouter.get('/active-drones/:userId', async (req, res) => {
   try {
     const userId = parseInt(req.params.userId);
 
-    // Get user's drones with their current status
+    // Get user's drones from DB
     const drones = await prisma.drone.findMany({
       where: { userId },
       select: {
@@ -337,17 +437,22 @@ userRouter.get('/active-drones/:userId', async (req, res) => {
       }
     });
 
-    // Format drones for frontend
-    const formattedDrones = drones.map((drone: any) => ({
-      id: drone.id,
-      name: drone.name,
-      uin: drone.uin,
-      status: drone.status,
-      batteryLevel: drone.batteryLevel,
-      lastSeen: drone.lastSeen?.toISOString(),
-      createdAt: drone.createdAt.toISOString(),
-      isConnected: drone.status === 'connected' || drone.status === 'flying'
-    }));
+    // Overlay in-memory truth for connection status
+    const dm = getDroneManager();
+    const formattedDrones = drones.map((drone: any) => {
+      const conn = dm.getConnection(drone.id);
+      const isConnected = !!conn?.isConnected;
+      return {
+        id: drone.id,
+        name: drone.name,
+        uin: drone.uin,
+        status: isConnected ? 'connected' : 'offline',
+        batteryLevel: drone.batteryLevel,
+        lastSeen: (conn?.lastUpdate ? new Date(conn.lastUpdate) : drone.lastSeen)?.toISOString(),
+        createdAt: drone.createdAt.toISOString(),
+        isConnected
+      };
+    });
 
     res.json({
       success: true,

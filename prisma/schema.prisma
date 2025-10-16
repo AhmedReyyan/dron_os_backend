@@ -31,6 +31,8 @@ model Drone {
   uin             String   @unique
   model           String?
   status          String   @default("offline") // offline, connected, flying, maintenance
+  ipAddress       String?
+  port            Int?
   batteryLevel    Int?     // 0-100
   lastSeen        DateTime?
   createdAt       DateTime @default(now())

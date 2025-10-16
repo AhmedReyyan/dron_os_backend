@@ -34,6 +34,9 @@ export interface EventData {
 
 class SessionService {
   private activeSessions = new Map<string, SessionData>();
+  // Per-session last event timestamps to throttle writes
+  private lastEventTimestamps: Map<string, Record<string, number>> = new Map();
+  private EVENT_COOLDOWN_MS = 3000; // 3s cooldown per event type
 
   /**
    * Start a new drone session
@@ -137,22 +140,32 @@ class SessionService {
    * Log a drone event
    */
   async logEvent(data: EventData): Promise<DroneEvent> {
-    return prisma.droneEvent.create({
-      data: {
-        sessionId: data.sessionId,
-        userId: data.userId,
-        droneId: data.droneId,
-        missionId: data.missionId,
-        eventType: data.eventType,
-        latitude: data.latitude,
-        longitude: data.longitude,
-        altitude: data.altitude,
-        battery: data.battery,
-        speed: data.speed,
-        mode: data.mode,
-        message: data.message
+    try {
+      return await prisma.droneEvent.create({
+        data: {
+          sessionId: data.sessionId,
+          userId: data.userId,
+          droneId: data.droneId,
+          missionId: data.missionId,
+          eventType: data.eventType,
+          latitude: data.latitude,
+          longitude: data.longitude,
+          altitude: data.altitude,
+          battery: data.battery,
+          speed: data.speed,
+          mode: data.mode,
+          message: data.message
+        }
+      });
+    } catch (err: any) {
+      // Swallow Prisma P1008 (SQLite timeout) to avoid crashing; caller throttles retries
+      if (err?.code === 'P1008') {
+        console.warn('[SessionService] Skipping event write due to DB timeout (P1008)');
+        // @ts-ignore - Return a placeholder-like object if needed by callers
+        return {} as DroneEvent;
       }
-    });
+      throw err;
+    }
   }
 
   /**
@@ -171,10 +184,19 @@ class SessionService {
     if (!sessionData) return;
 
     // Only log important events, not every telemetry point
+    // Throttle per event type per session
+    const now = Date.now();
+    if (!this.lastEventTimestamps.has(sessionId)) {
+      this.lastEventTimestamps.set(sessionId, {});
+    }
+    const lastByType = this.lastEventTimestamps.get(sessionId)!;
+
     const events: EventData[] = [];
 
     // Check for takeoff
     if (telemetry.armed && telemetry.altitude && telemetry.altitude > 5) {
+      const last = lastByType['takeoff'] || 0;
+      if (now - last >= this.EVENT_COOLDOWN_MS) {
       events.push({
         sessionId: 0, // Will be updated
         userId: sessionData.userId,
@@ -189,10 +211,14 @@ class SessionService {
         mode: telemetry.mode,
         message: `Drone took off at ${telemetry.altitude}m altitude`
       });
+        lastByType['takeoff'] = now;
+      }
     }
 
     // Check for landing
     if (!telemetry.armed && telemetry.altitude && telemetry.altitude < 2) {
+      const last = lastByType['landing'] || 0;
+      if (now - last >= this.EVENT_COOLDOWN_MS) {
       events.push({
         sessionId: 0, // Will be updated
         userId: sessionData.userId,
@@ -207,10 +233,14 @@ class SessionService {
         mode: telemetry.mode,
         message: `Drone landed at ${telemetry.altitude}m altitude`
       });
+        lastByType['landing'] = now;
+      }
     }
 
     // Check for low battery
     if (telemetry.battery && telemetry.battery < 20) {
+      const last = lastByType['battery_low'] || 0;
+      if (now - last >= this.EVENT_COOLDOWN_MS) {
       events.push({
         sessionId: 0, // Will be updated
         userId: sessionData.userId,
@@ -225,34 +255,41 @@ class SessionService {
         mode: telemetry.mode,
         message: `Low battery warning: ${telemetry.battery}%`
       });
+        lastByType['battery_low'] = now;
+      }
     }
 
     // Check for mode changes
     if (telemetry.mode && telemetry.mode !== 'UNKNOWN') {
-      events.push({
-        sessionId: 0, // Will be updated
-        userId: sessionData.userId,
-        droneId: sessionData.droneId,
-        missionId: sessionData.missionId,
-        eventType: 'mode_change',
-        latitude: telemetry.latitude,
-        longitude: telemetry.longitude,
-        altitude: telemetry.altitude,
-        battery: telemetry.battery,
-        speed: telemetry.speed,
-        mode: telemetry.mode,
-        message: `Mode changed to ${telemetry.mode}`
-      });
+      const last = lastByType['mode_change'] || 0;
+      if (now - last >= this.EVENT_COOLDOWN_MS) {
+        events.push({
+          sessionId: 0, // Will be updated
+          userId: sessionData.userId,
+          droneId: sessionData.droneId,
+          missionId: sessionData.missionId,
+          eventType: 'mode_change',
+          latitude: telemetry.latitude,
+          longitude: telemetry.longitude,
+          altitude: telemetry.altitude,
+          battery: telemetry.battery,
+          speed: telemetry.speed,
+          mode: telemetry.mode,
+          message: `Mode changed to ${telemetry.mode}`
+        });
+        lastByType['mode_change'] = now;
+      }
     }
 
     // Log events
     for (const event of events) {
-      const session = await prisma.droneSession.findFirst({
-        where: { sessionId }
-      });
-      if (session) {
-        event.sessionId = session.id;
+      const session = await prisma.droneSession.findFirst({ where: { sessionId } });
+      if (!session) continue;
+      event.sessionId = session.id;
+      try {
         await this.logEvent(event);
+      } catch (e) {
+        // Already handled in logEvent; continue
       }
     }
   }
