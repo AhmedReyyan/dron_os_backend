@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("psql 'postgresql://neondb_owner:npg_nWMuH8xX2FkZ@ep-flat-wind-adidiztx-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'")
 }
 
 model User {
