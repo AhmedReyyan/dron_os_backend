@@ -87,7 +87,7 @@ class DroneWebSocketService {
       this.clients.delete(ws);
     });
 
-    ws.on('error', (error) => {
+    ws.on('error', (error: Error) => {
       console.error('[WebSocket] Client error:', error);
       this.clients.delete(ws);
     });

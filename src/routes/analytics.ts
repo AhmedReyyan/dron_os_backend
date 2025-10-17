@@ -347,18 +347,18 @@ analyticsRouter.get('/battery/:userId', async (req, res) => {
     });
 
     // Generate trends (daily averages from sessions)
-    const trends = [];
-    const dailyData = new Map();
+    const trends: Array<{ date: string; averageLevel: number }> = [];
+    const dailyData = new Map<string, number[]>();
     sessions.forEach(session => {
       const date = session.startTime.toISOString().split('T')[0];
       if (!dailyData.has(date)) {
         dailyData.set(date, []);
       }
-      dailyData.get(date).push(session.startBattery || 0);
+      dailyData.get(date)!.push(session.startBattery || 0);
     });
 
-    dailyData.forEach((batteries, date) => {
-      const avgLevel = batteries.reduce((sum, level) => sum + level, 0) / batteries.length;
+    dailyData.forEach((batteries: number[], date: string) => {
+      const avgLevel = batteries.reduce((sum: number, level: number) => sum + level, 0) / batteries.length;
       trends.push({
         date,
         averageLevel: avgLevel
