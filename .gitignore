@@ -35,3 +35,10 @@ coverage/
 .tmp/
 
 /src/generated/prisma
+
+
+
+*dev.db
+/dev.db
+.db
+*.db

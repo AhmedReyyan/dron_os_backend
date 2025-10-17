@@ -4,14 +4,203 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  url      = env("psql 'postgresql://neondb_owner:npg_nWMuH8xX2FkZ@ep-flat-wind-adidiztx-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'")
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  password  String
-  resetPasswordOtp Int @default(0)
+  id               Int         @id @default(autoincrement())
+  email            String      @unique
+  name             String?
+  createdAt        DateTime    @default(now())
+  password         String
+  resetPasswordOtp Int         @default(0)
+  isAdmin          Boolean     @default(false)
+  
+  // Relations
+  drones           Drone[]
+  missions         Mission[]
+  activities       Activity[]
+  telemetryData    TelemetryData[]
+  droneSessions    DroneSession[]
+  droneEvents      DroneEvent[]
+}
+
+model Drone {
+  id              Int      @id @default(autoincrement())
+  name            String
+  uin             String   @unique
+  model           String?
+  status          String   @default("offline") // offline, connected, flying, maintenance
+  ipAddress       String?
+  port            Int?
+  batteryLevel    Int?     // 0-100
+  lastSeen        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  userId          Int
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  missions        Mission[]
+  telemetryData   TelemetryData[]
+  activities      Activity[]
+  sessions        DroneSession[]
+  events          DroneEvent[]
+  
+  @@map("drones")
+}
+
+model Mission {
+  id              Int      @id @default(autoincrement())
+  name            String
+  description     String?
+  status          String   @default("planned") // planned, active, completed, cancelled, failed
+  startTime       DateTime?
+  endTime         DateTime?
+  flightHours     Float    @default(0)
+  success         Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  userId          Int
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  droneId         Int?
+  drone           Drone?   @relation(fields: [droneId], references: [id], onDelete: SetNull)
+  waypoints       Waypoint[]
+  activities      Activity[]
+  sessions        DroneSession[]
+  events          DroneEvent[]
+  
+  @@map("missions")
+}
+
+model Waypoint {
+  id              Int      @id @default(autoincrement())
+  latitude        Float
+  longitude       Float
+  altitude        Float
+  order           Int
+  createdAt       DateTime @default(now())
+  
+  // Relations
+  missionId       Int
+  mission         Mission  @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  
+  @@map("waypoints")
+}
+
+model TelemetryData {
+  id              Int      @id @default(autoincrement())
+  latitude        Float
+  longitude       Float
+  altitude        Float
+  relativeAltitude Float
+  groundSpeed     Float
+  airSpeed        Float
+  heading         Float
+  throttle        Float
+  battery         Int      // 0-100
+  satellites      Int
+  armed           Boolean  @default(false)
+  mode            String   @default("UNKNOWN")
+  timestamp       DateTime @default(now())
+  
+  // Relations
+  userId          Int
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  droneId         Int
+  drone           Drone    @relation(fields: [droneId], references: [id], onDelete: Cascade)
+  
+  @@map("telemetry_data")
+}
+
+model Activity {
+  id              Int      @id @default(autoincrement())
+  type            String   // mission_started, mission_completed, drone_connected, drone_disconnected, zone_violation, etc.
+  title           String
+  description     String?
+  status          String   // success, warning, error, info
+  timestamp       DateTime @default(now())
+  
+  // Relations
+  userId          Int
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  droneId         Int?
+  drone           Drone?   @relation(fields: [droneId], references: [id], onDelete: SetNull)
+  missionId       Int?
+  mission         Mission? @relation(fields: [missionId], references: [id], onDelete: SetNull)
+  
+  @@map("activities")
+}
+
+model Zone {
+  id              Int      @id @default(autoincrement())
+  name            String
+  city            String
+  type            String   // green, yellow, red
+  geometry        String   // GeoJSON string
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("zones")
+}
+
+model DroneSession {
+  id              Int      @id @default(autoincrement())
+  sessionId       String   @unique
+  startTime       DateTime
+  endTime         DateTime?
+  startBattery    Int      // Battery level at start
+  endBattery      Int?     // Battery level at end
+  batteryUsed     Int?     // Calculated battery usage
+  startLatitude   Float?
+  startLongitude  Float?
+  endLatitude     Float?
+  endLongitude    Float?
+  totalDistance   Float    @default(0) // Total distance in meters
+  maxAltitude     Float    @default(0)
+  maxSpeed        Float    @default(0)
+  avgSpeed        Float    @default(0)
+  flightDuration  Int?     // Duration in seconds
+  status          String   @default("active") // active, completed, disconnected
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  userId          Int
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  droneId         Int
+  drone           Drone    @relation(fields: [droneId], references: [id], onDelete: Cascade)
+  missionId       Int?
+  mission         Mission? @relation(fields: [missionId], references: [id], onDelete: SetNull)
+  events          DroneEvent[]
+  
+  @@map("drone_sessions")
+}
+
+model DroneEvent {
+  id              Int      @id @default(autoincrement())
+  eventType       String   // takeoff, landing, battery_low, zone_violation, mode_change, etc.
+  latitude        Float?
+  longitude       Float?
+  altitude        Float?
+  battery         Int?
+  speed           Float?
+  mode            String?
+  message         String?
+  timestamp       DateTime @default(now())
+  
+  // Relations
+  userId          Int
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  droneId         Int
+  drone           Drone    @relation(fields: [droneId], references: [id], onDelete: Cascade)
+  sessionId       Int?
+  session         DroneSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  missionId       Int?
+  mission         Mission? @relation(fields: [missionId], references: [id], onDelete: SetNull)
+  
+  @@map("drone_events")
 }
